@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fireworks Generator</title>
+    <!-- Load Tailwind CSS for utility classes --><script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom CSS to make the canvas full-screen and the background dark */
+        body, html {
+            height: 100%;
+            margin: 0;
+            overflow: hidden;
+            background-color: #0d0d1a; /* Very dark blue/purple */
+            font-family: 'Inter', sans-serif;
+            cursor: crosshair; /* Nice cursor for launching */
+        }
+        #fireworksCanvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            background-color: transparent; /* Canvas background is handled by the body/logic */
+        }
+        #infoBox {
+            pointer-events: none;
+            text-shadow: 0 0 8px rgba(255, 255, 255, 0.5);
+        }
+        /* Style for the fixed signature */
+        #signature {
+            pointer-events: auto; /* Make the parent div non-interactive */
+        }
+    </style>
+</head>
+<body class="flex items-center justify-center">
+
+    <canvas id="fireworksCanvas"></canvas>
+
+    <!-- UI: Basic Instructions --><div id="infoBox" class="absolute top-4 left-4 p-3 bg-white/10 backdrop-blur-sm rounded-xl text-white shadow-2xl transition-opacity duration-500 z-10">
+        <h1 class="text-2xl font-bold">Firework Show</h1>
+        <p class="text-sm">Click or tap anywhere to launch a firework!</p>
+    </div>
+
+    <!-- UI: Input Box for Firework Name --><div class="absolute top-4 left-1/2 transform -translate-x-1/2 p-3 bg-white/10 backdrop-blur-sm rounded-xl shadow-2xl z-10">
+        <label for="fireworkNameInput" class="text-sm font-semibold text-white block mb-1">Enter Firework Name:</label>
+        <input type="text" id="fireworkNameInput" value="" placeholder="e.g., Star Serpent" 
+               class="p-2 w-48 rounded-lg bg-gray-900/50 text-white border border-yellow-500/50 focus:outline-none focus:border-yellow-300 focus:ring-1 focus:ring-yellow-300"
+               maxlength="20">
+    </div>
+    
+    <!-- UI: Creator Signature (Updated with Link) -->
+    <div id="signature" class="absolute bottom-4 right-4 z-10">
+        <a href="https://dhavals.webflow.io" target="_blank" 
+           class="text-white/50 text-sm font-medium hover:text-white transition duration-300">
+            Made by Dhaval
+        </a>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('fireworksCanvas');
+        const ctx = canvas.getContext('2d');
+        const infoBox = document.getElementById('infoBox');
+        const fireworkNameInput = document.getElementById('fireworkNameInput'); 
+        
+        let fireworks = [];
+        let particles = [];
+        let floatingTexts = []; 
+        let hue = 0; // Global hue for vibrant colors
+
+        // Setup the canvas size
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        // Utility: Calculate the distance between two points
+        const distance = (p1x, p1y, p2x, p2y) => {
+            const dx = p1x - p2x;
+            const dy = p1y - p2y;
+            return Math.sqrt(dx * dx + dy * dy);
+        };
+
+        // --- Floating Text Class (Fixed 2-second life) ---
+        class FloatingText {
+            constructor(x, y, content, hue) { // Added hue parameter
+                this.x = x;
+                this.y = y;
+                this.content = content;
+                this.hue = hue; // Store the firework's hue
+                this.life = 0; 
+                this.maxLife = 2000; // Fixed 2 seconds (2000ms) life
+                this.alpha = 1;
+            }
+
+            update(dt) {
+                this.life += dt;
+                
+                // Move text up slowly
+                this.y -= 0.5 * (dt / 16); // Normalized movement speed
+
+                // Fade out in the last half second of life
+                if (this.life > this.maxLife - 500) {
+                    this.alpha = 1 - (this.life - (this.maxLife - 500)) / 500;
+                }
+            }
+
+            draw() {
+                ctx.save();
+                // Use the firework's hue for the text color
+                ctx.fillStyle = `hsla(${this.hue}, 100%, 70%, ${this.alpha})`; 
+                // Large, bold font for high visibility
+                ctx.font = 'bold 30px Inter, sans-serif'; 
+                ctx.textAlign = 'center';
+                // Stronger shadow for better pop
+                ctx.shadowColor = `hsla(${this.hue}, 100%, 50%, ${this.alpha * 0.8})`; 
+                ctx.shadowBlur = 15;
+                ctx.fillText(this.content, this.x, this.y);
+                ctx.restore();
+            }
+        }
+
+        // --- Particle Class (The individual sparks in the explosion) ---
+        class Particle {
+            constructor(x, y, color) {
+                this.x = x;
+                this.y = y;
+                this.color = color;
+                this.alpha = 1;
+                this.friction = 0.95;
+                this.gravity = 0.98;
+                this.life = Math.random() * 100 + 50; // Life span for fading out
+
+                const angle = Math.random() * Math.PI * 2;
+                const speed = Math.random() * 8 + 1;
+
+                this.vx = Math.cos(angle) * speed;
+                this.vy = Math.sin(angle) * speed;
+            }
+
+            update() {
+                this.vx *= this.friction;
+                this.vy *= this.friction;
+
+                if (this.gravity) {
+                    this.vy += this.gravity;
+                }
+
+                this.x += this.vx;
+                this.y += this.vy;
+
+                this.alpha -= 0.01;
+                this.life--;
+            }
+
+            draw() {
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, 1.5, 0, Math.PI * 2, false);
+                ctx.fillStyle = `hsla(${this.color}, 100%, 60%, ${this.alpha})`;
+                ctx.fill();
+            }
+        }
+
+
+        // --- Firework Class (The main rocket and explosion logic) ---
+        class Firework {
+            constructor(startX, startY, targetX, targetY) {
+                this.x = startX;
+                this.y = startY;
+                this.startX = startX;
+                this.startY = startY;
+                this.targetX = targetX;
+                this.targetY = targetY;
+
+                this.distanceToTarget = distance(startX, startY, targetX, targetY);
+
+                const angle = Math.atan2(targetY - startY, targetX - startX);
+                this.vx = Math.cos(angle);
+                this.vy = Math.sin(angle);
+                this.speed = 4 + Math.random() * 2;
+
+                this.hue = hue; // The hue for THIS firework
+                this.brightness = 50;
+                this.exploded = false;
+                this.particles = [];
+            }
+
+            update() {
+                if (this.exploded) {
+                    for (let i = this.particles.length - 1; i >= 0; i--) {
+                        this.particles[i].update();
+                        if (this.particles[i].alpha <= 0 || this.particles[i].life <= 0) {
+                            this.particles.splice(i, 1);
+                        }
+                    }
+                } else {
+                    const travelDist = distance(this.startX, this.startY, this.x + this.vx * this.speed, this.y + this.vy * this.speed);
+
+                    if (travelDist >= this.distanceToTarget) {
+                        this.explode();
+                    } else {
+                        this.x += this.vx * this.speed;
+                        this.y += this.vy * this.speed;
+                        particles.push(new Particle(this.x, this.y, this.hue));
+                    }
+                }
+            }
+
+            draw() {
+                if (!this.exploded) {
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, 3, 0, Math.PI * 2, false);
+                    ctx.fillStyle = `hsl(${this.hue}, 100%, ${this.brightness}%)`;
+                    ctx.fill();
+                } else {
+                    this.particles.forEach(p => p.draw());
+                }
+            }
+
+            explode() {
+                this.exploded = true;
+                const particleCount = 100 + Math.random() * 100;
+                
+                // Get user-defined name
+                const fireworkName = fireworkNameInput.value.trim();
+                
+                // NEW LOGIC: Only show the FloatingText if a name was actually entered (not blank)
+                if (fireworkName.length > 0) {
+                    // Start the text 20 pixels below the explosion point for best visibility
+                    // Pass THIS firework's hue to the FloatingText constructor
+                    const floatingText = new FloatingText(this.x, this.y + 20, fireworkName, this.hue); 
+                    floatingTexts.push(floatingText);
+                }
+                
+
+                // Particle generation
+                for (let i = 0; i < particleCount; i++) {
+                    const particle = new Particle(this.x, this.y, this.hue);
+
+                    const angle = Math.random() * Math.PI * 2;
+                    const speed = Math.random() * 15 + 3;
+                    particle.vx = Math.cos(angle) * speed;
+                    particle.vy = Math.sin(angle) * speed;
+
+                    if (Math.random() < 0.2) {
+                        particle.color = Math.random() * 360; // Occasionally a different color particle
+                    }
+
+                    this.particles.push(particle);
+                }
+            }
+        }
+
+
+        // --- Animation Loop ---
+        let lastTime = 0;
+
+        function animate(currentTime) {
+            if (!lastTime) lastTime = currentTime;
+            const dt = currentTime - lastTime;
+            lastTime = currentTime;
+            
+            requestAnimationFrame(animate);
+
+            // 1. Draw a semi-transparent black rectangle over the whole canvas for trails
+            ctx.fillStyle = 'rgba(13, 13, 26, 0.1)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            hue = (hue + 0.5) % 360; // Global hue cycles for new fireworks
+
+            // 2. Update and draw fireworks
+            for (let i = fireworks.length - 1; i >= 0; i--) {
+                fireworks[i].update();
+                fireworks[i].draw();
+
+                if (fireworks[i].exploded && fireworks[i].particles.length === 0) {
+                    fireworks.splice(i, 1);
+                }
+            }
+
+            // 3. Update and draw rocket trail particles
+            for (let i = particles.length - 1; i >= 0; i--) {
+                particles[i].update();
+                particles[i].draw();
+
+                if (particles[i].alpha <= 0 || particles[i].life <= 0) {
+                    particles.splice(i, 1);
+                }
+            }
+
+            // 4. Update and draw floating text
+            for (let i = floatingTexts.length - 1; i >= 0; i--) {
+                floatingTexts[i].update(dt);
+                floatingTexts[i].draw();
+
+                // Remove the text if its life is over
+                if (floatingTexts[i].life >= floatingTexts[i].maxLife) {
+                    floatingTexts.splice(i, 1);
+                }
+            }
+        }
+
+        // --- Event Listener to launch fireworks ---
+        function launchFirework(e) {
+            // Prevent launching if clicking on the input box
+            if (e.target === fireworkNameInput) {
+                return;
+            }
+
+            const x = e.clientX || e.touches[0].clientX;
+            const y = e.clientY || e.touches[0].clientY;
+
+            const startX = canvas.width / 2;
+            const startY = canvas.height;
+
+            fireworks.push(new Firework(startX, startY, x, y));
+
+            infoBox.classList.add('opacity-0');
+        }
+
+        // Set up event listeners for mouse and touch
+        canvas.addEventListener('mousedown', launchFirework);
+        canvas.addEventListener('touchstart', launchFirework);
+
+
+        // Start the animation loop
+        window.onload = function () {
+            setTimeout(animate, 50);
+        }
+
+    </script>
+</body>
+</html>
